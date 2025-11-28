@@ -1,2 +1,0 @@
-# astrbot_plugin_infinite_memory
-astrbot无限记忆插件
