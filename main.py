@@ -25,17 +25,15 @@ class InfiniteMemoryPlugin(Star):
         os.makedirs(self.data_dir, exist_ok=True)
         self.memory_manager = MemoryManager(context, config, self.data_dir)
         
-        # 状态管理（防抖 + 防重入）
-        self.session_trigger_count = {}   # {session_id: 连续超阈值次数}
-        self.session_summarizing = set()  # {session_id}
-        self.session_token_count = {}     # {session_id: 累计真实 token}
+        self.session_trigger_count = {}
+        self.session_summarizing = set()
+        self.session_token_count = {}
         
         logger.info("🧠 无限记忆插件 v1.1.2 启动")
 
     # ========== 真实 Token 统计钩子 ==========
     @filter.on_llm_response()
     async def _on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        """仅统计 bot 实际处理的请求"""
         try:
             session_id = event.unified_msg_origin
             usage = getattr(resp.raw_completion, "usage", None)
@@ -67,7 +65,6 @@ class InfiniteMemoryPlugin(Star):
             max_token = self.config.get("max_token_count", 10000)
             
             if current_tokens >= max_token:
-                #防抖：连续 3 次超阈值才触发
                 self.session_trigger_count[session_id] = self.session_trigger_count.get(session_id, 0) + 1
                 logger.debug(f"[防抖动] 会话 {session_id} 连续超阈值: {self.session_trigger_count[session_id]}/3")
                 
@@ -79,7 +76,7 @@ class InfiniteMemoryPlugin(Star):
                     try:
                         summary_text = await self._generate_summary(conversation, event)
                         if summary_text:
-                            #最小轮次保护：至少 5 轮
+                            #最小轮次保护
                             raw_history = []
                             try:
                                 raw_history = json.loads(conversation.history)
@@ -97,7 +94,6 @@ class InfiniteMemoryPlugin(Star):
                     finally:
                         self.session_summarizing.discard(session_id)
             else:
-                #仅当明显回落（<80%）才清零计数器
                 if current_tokens < max_token * 0.8:
                     self.session_trigger_count.pop(session_id, None)
                     
@@ -109,7 +105,6 @@ class InfiniteMemoryPlugin(Star):
     # ========== 记忆召回钩子 ==========
     @filter.event_message_type(filter.EventMessageType.ALL, priority=90)
     async def on_recall_memory(self, event: AstrMessageEvent):
-        """在 LLM 请求前注入相关记忆"""
         if not self._is_event_valid(event) or not self._check_whitelist(event):
             return
 
@@ -136,14 +131,12 @@ class InfiniteMemoryPlugin(Star):
 
     @inmem_group.command("status")
     async def inmem_status(self, event: AstrMessageEvent):
-        """查看插件状态"""
         try:
             db_path = self.memory_manager._get_db_path(event)
             if not os.path.exists(db_path):
                 yield event.plain_result("📊 数据库尚未创建")
                 return
 
-            #修正：封装调用 MemoryManager
             stats = self.memory_manager.get_memory_statistics(db_path)
             max_token = self.config.get("max_token_count", 10000)
             keep_last = self.config.get("keep_last_rounds", 10)
@@ -152,7 +145,7 @@ class InfiniteMemoryPlugin(Star):
             emb_provider = self.config.get("embedding_provider_id", "默认")
 
             msg = (
-                "🧠 无限记忆插件状态\n"
+                "🧠 无限记忆插件 v1.1.2 状态\n"
                 f"📊 数据统计：\n"
                 f"  • 记忆总数：{stats['memory_count']}\n"
                 f"  • 用户画像：{stats['profile_count']}\n"
@@ -198,7 +191,6 @@ class InfiniteMemoryPlugin(Star):
                 yield event.plain_result("📭 尚无用户画像数据")
                 return
 
-            #修正：封装调用
             profiles = self.memory_manager.search_profiles_by_name(db_path, name)
             if not profiles:
                 yield event.plain_result(f"👤 未找到称呼为 '{name}' 的用户画像")
@@ -234,7 +226,6 @@ class InfiniteMemoryPlugin(Star):
                 yield event.plain_result("📭 尚无用户画像数据")
                 return
 
-            #修正：封装调用
             profile = self.memory_manager.get_profile_by_user_id(db_path, user_id)
             if not profile:
                 yield event.plain_result(f"❌ 未找到用户ID {user_id} 的画像")
@@ -261,7 +252,6 @@ class InfiniteMemoryPlugin(Star):
 
     @inmem_group.command("token")
     async def inmem_token_usage(self, event: AstrMessageEvent):
-        """查看当前会话累计 token"""
         try:
             session_id = event.unified_msg_origin
             current_tokens = self.session_token_count.get(session_id, 0)
@@ -289,7 +279,6 @@ class InfiniteMemoryPlugin(Star):
 
     @inmem_group.command("summary", alias={"总结"})
     async def inmem_force_summarize(self, event: AstrMessageEvent):
-        """立即触发总结"""
         try:
             conversation = await self._get_conversation(event)
             if not conversation or not conversation.history:
@@ -374,28 +363,30 @@ class InfiniteMemoryPlugin(Star):
             content = msg.get("content", "")
             history_text += f"{role}: {content}\n"
 
+        # LLM 输出标准 JSON
         summary_prompt = (
-            "你是一个专业的对话分析师，需要将群聊/私聊历史总结为结构化记忆。\n"
-            "要求：\n"
-            "1. **字数限制**：≤500字，言简意赅\n"
-            "2. **格式要求**：\n"
-            "   - 以「【前情提要】」开头\n"
-            "   - 直接输出内容，无开场白/结束语\n"
-            "3. **内容重点**：\n"
-            "   - 【参与者列表】（必须包含）：按以下格式逐行列出：\n"
-            "       • 用户名（ID: 数字ID，角色：身份，相关度：【核心/活跃/提及】）\n"
-            "       • 你（AI角色名，相关度：【核心】）\n"
-            "   - 关键任务/决策：已完成的重要事项\n"
-            "   - 进行中事项：尚未完成的话题\n"
-            "   - 用户特征：显著的性格/偏好\n"
-            "4. **相关度定义**：\n"
-            "   - 【核心】：发起话题、做决策、多次主导对话\n"
-            "   - 【活跃】：≥2轮有效发言、提供关键信息\n"
-            "   - 【提及】：被他人提到但未直接参与\n"
-            "5. **ID 推断规则**：\n"
-            "   - 用户ID = 消息中的 sender.user_id（如 2980223165）\n"
-            "   - 若未明确，用已知ID或'unknown'\n"
-            "6. **语气**：客观、陈述式\n\n"
+            "你是一个专业的对话分析师，需将群聊/私聊历史总结为结构化 JSON。\n"
+            "【严格要求】\n"
+            "- 只输出纯 JSON，不要任何说明、Markdown、注释\n"
+            "- 使用 UTF-8 编码，不转义中文\n"
+            "- 字段必须完整，不得省略\n"
+            "- summary 字段用第一人称（'我观察到...'），≤300字\n"
+            "- participants 必须包含每个用户的：ID（数字）、角色（身份）、相关度（core/active/mentioned）\n\n"
+            "# 输出格式\n"
+            "必须输出标准JSON,包含以下字段:\n\n"
+            "```json\n"
+            "{\n"
+            '  "summary": "我观察到的群聊摘要(第一人称,确保包含关键信息)",\n'
+            '  "topics": ["讨论的主题1", "主题2"],\n'
+            '  "key_facts": ["关键事实1", "事实2"],\n'
+            '  "participants": [\n'
+            '    {"id": "2980223165", "name": "十一", "role": "用户", "relevance": "core"},\n'
+            '    {"id": "1181907161", "name": "艾玛", "role": "用户", "relevance": "active"}\n'
+            '  ],\n'
+            '  "sentiment": "positive",\n'
+            '  "importance": 0.85\n'
+            "}\n"
+            "```\n\n"
             f"对话记录：\n{history_text}"
         )
 
@@ -471,13 +462,19 @@ class InfiniteMemoryPlugin(Star):
 
             new_conv = None
             if hasattr(conv_mgr, "new_conversation"):
-                new_conv_or_cid = await conv_mgr.new_conversation(uid)
-                if isinstance(new_conv_or_cid, str):
-                    cid = new_conv_or_cid
-                    await asyncio.sleep(0.1)
-                    new_conv = await conv_mgr.get_conversation(uid, cid)
+                cid = await conv_mgr.new_conversation(uid)
+                # 异步等待新会话可用
+                for _ in range(10): 
+                    try:
+                        new_conv = await conv_mgr.get_conversation(uid, cid)
+                        if new_conv and hasattr(new_conv, 'history'):
+                            break
+                    except:
+                        pass
+                    await asyncio.sleep(0.01)  # 异步让出，非阻塞
                 else:
-                    new_conv = new_conv_or_cid
+                    raise RuntimeError("新会话创建超时")
+
             if not new_conv:
                 raise RuntimeError("无法创建新对话")
 

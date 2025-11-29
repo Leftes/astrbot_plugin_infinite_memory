@@ -11,7 +11,7 @@ from astrbot.api.event import AstrMessageEvent
 
 class MemoryManager:
     def __init__(self, context, config, data_dir: str):
-        """data_dir 由 main.py 传入"""
+        """data_dir 由 main.py"""
         self.context = context
         self.config = config
         self.data_dir = data_dir
@@ -40,7 +40,7 @@ class MemoryManager:
             return -1
 
     async def inject_memory(self, event, summary_text: str, source_summary_id: int):
-        """使用真实 user_id，支持多用户画像"""
+        """JSON 解析"""
         try:
             db_path = self._get_db_path(event)
             memory_text = self._generate_memory_text(summary_text)
@@ -72,24 +72,42 @@ class MemoryManager:
                     embedding=embedding
                 )
 
-                #修正：获取真实用户ID（非 session_id）
+                #获取真实用户ID
                 if hasattr(event.message_obj, 'sender') and hasattr(event.message_obj.sender, 'user_id'):
                     trigger_user_id = str(event.message_obj.sender.user_id).strip()
                 else:
                     trigger_user_id = event.unified_msg_origin
 
-                #修正：增强正则（兼容中文标点/全角符号）
-                participants = self._extract_participants(summary_text)
+                #JSON 解析 LLM
+                data = self._parse_summary_json(summary_text)
+                if not data:
+                    # 降级为单用户模式
+                    participants = [{
+                        "user_id": trigger_user_id,
+                        "display_names": [getattr(event.message_obj.sender, 'nickname', 'user')],
+                        "role": "用户",
+                        "relevance": "core"
+                    }]
+                else:
+                    participants = []
+                    for p in data.get("participants", []):
+                        participants.append({
+                            "user_id": str(p.get("id", "unknown")).strip(),
+                            "display_names": [p.get("name", "user")],
+                            "role": p.get("role", "user"),
+                            "relevance": p.get("relevance", "active")
+                        })
+
                 high_relevance_users = [
                     p for p in participants 
-                    if p.get("relevance") in ["核心", "活跃"]
+                    if p.get("relevance") in ["core", "active"]
                 ]
                 if not high_relevance_users:
                     high_relevance_users = [{
                         "user_id": trigger_user_id,
-                        "display_names": [getattr(event.message_obj.sender, 'nickname', 'user')],
+                        "display_names": ["用户"],
                         "role": "用户",
-                        "relevance": "核心"
+                        "relevance": "core"
                     }]
 
                 logger.info(f"📊 识别 {len(participants)} 位用户，仅更新 {len(high_relevance_users)} 位高相关用户画像")
@@ -159,25 +177,34 @@ class MemoryManager:
         sentences = [s.strip() for s in summary_text.replace('。', '，').split('，') if s.strip()]
         return sentences[:5]
 
-    # ==========增强正则解析 ==========
-    def _extract_participants(self, summary_text: str) -> List[Dict]:
-        """增强版：兼容中文标点/全角符号/空格波动"""
-        participants = []
-        #宽松匹配（支持 ： / : / （ / ( / 全角空格 / 　）
-        pattern = r'(\S+?)\s*[（(]\s*ID[：:]\s*(\d+)\s*,\s*角色[：:]\s*([^，)，)]+)\s*,\s*相关度[：:]\s*[【\[]([^】\]]+)[】\]]\s*[）)]'
-        matches = re.findall(pattern, summary_text, re.UNICODE)
+    # ==========JSON 解析==========
+    def _parse_summary_json(self, summary_text: str) -> Optional[Dict]:
+        """安全解析 LLM 输出的 JSON"""
+        # 尝试提取 ```json {...} ``` 或直接 {...}
+        json_match = re.search(r'```json\s*({.*?})\s*```', summary_text, re.DOTALL)
+        if not json_match:
+            json_match = re.search(r'({.*})', summary_text, re.DOTALL)
         
-        for name, user_id, role, relevance in matches:
-            # 清理全角空格
-            name = name.replace("　", " ").strip()
-            user_id = user_id.replace("　", "").strip()
-            participants.append({
-                "user_id": user_id,
-                "display_names": [n.strip() for n in name.replace("/", "、").split("、") if n.strip()],
-                "role": role.strip(),
-                "relevance": relevance.strip()
-            })
-        return participants
+        if not json_match:
+            logger.error(f"❌ 无法从总结中提取 JSON: {summary_text[:200]}...")
+            return None
+        
+        try:
+            #安全防护：拒接危险字段
+            raw_json = json_match.group(1)
+            if "__" in raw_json or "exec" in raw_json or "eval" in raw_json:
+                raise ValueError("Detected unsafe content")
+            
+            data = json.loads(raw_json)
+            # 验证必需字段
+            required = ["summary", "participants", "importance"]
+            if not all(k in data for k in required):
+                logger.error(f"❌ JSON 缺失必需字段: {required}")
+                return None
+            return data
+        except Exception as e:
+            logger.error(f"❌ JSON 解析失败: {e} | 内容: {summary_text[:200]}...")
+            return None
 
     def _analyze_affinity_for_user(self, summary_text: str, user_id: str) -> int:
         """基于用户在总结中的行为计算好感度变化"""
@@ -247,7 +274,7 @@ class MemoryManager:
             logger.error(f"记忆召回失败: {e}", exc_info=True)
         return ""
 
-    # ==========封装数据库查询（供 main.py 调用） ==========
+    # ==========封装数据库查询==========
     def get_memory_statistics(self, db_path: str) -> Dict[str, int]:
         """获取数据库统计信息（供 /inmem status 使用）"""
         with sqlite3.connect(db_path) as conn:
