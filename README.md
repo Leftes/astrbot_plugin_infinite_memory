@@ -1,103 +1,151 @@
-# 🧠 无限记忆插件
+# 无限记忆插件
+> **让AI拥有长期记忆，突破上下文限制，实现真正的无限对话体验**
 
-**AstrBot 插件**：自动总结对话历史，构建用户画像与记忆图谱，突破 LLM 上下文限制，实现真正的"无限对话"体验。
-> **核心理念**：当对话达到阈值时，自动将历史总结为精简记忆，保留上下文连贯性的同时突破 token 限制，让 AI 拥有"长期记忆"能力。
+## 🌟 核心功能
 
-## ✨ 主要特性
-
-- **无限对话**：自动总结并压缩对话历史，突破 LLM 上下文窗口限制
-- **智能记忆**：基于对话总结生成用户画像和记忆节点，构建知识图谱
-- **精准召回**：通过关键词+语义搜索，在需要时精准召回相关记忆
+- **无限对话**：自动总结对话历史，突破LLM上下文窗口限制
+- **多用户画像**：为每个参与者构建个性化画像，记录偏好与关系
+- **精准记忆召回**：关键词+语义搜索，智能提取相关记忆
 - **群聊隔离**：为每个群组创建独立记忆数据库，保障数据安全
-- **管理员指令**：提供完整的 `/inmem` 指令集，便于调试与管理
 - **故障保护**：多重降级策略，确保系统稳健运行
+- **Token优化**：基于真实Token统计，避免非bot对话触发总结
 
-## 📦 安装方法
+## 📦 安装指南
 
-1. **克隆仓库**：
-   ```bash
-   git clone https://github.com/Leftes/astrbot_plugin_infinite_memory.git
-   ```
+### 方法一：Git克隆（推荐）
 
-2. **复制插件**：
-   ```bash
-   # 将插件文件夹复制到 AstrBot 的插件目录
-   cp -r astrbot_plugin_infinite_memory /path/to/AstrBot/data/plugins/
-   ```
+```bash
+# 进入AstrBot插件目录
+cd /path/to/AstrBot/data/plugins/
 
-3. **重启 AstrBot**：
-   ```bash
-   # 重启你的 AstrBot 服务
-   systemctl restart astrbot  # 或使用你的启动命令
-   ```
+# 克隆插件仓库
+git clone https://github.com/ThriEy/astrbot_plugin_infinite_memory.git
 
-4. **启用插件**：
-   - 在 AstrBot WebUI 中，进入「插件管理」
-   - 找到「无限记忆插件」并启用
-   - 配置参数（详见下文）
+# 重启AstrBot
+systemctl restart astrbot  # 或使用你的启动命令
+```
 
-## ⚙️ 配置参数
+### 方法二：手动安装
 
-在 AstrBot WebUI 插件配置界面中，可设置以下参数：
+1. 下载[最新release](https://github.com/ThriEy/astrbot_plugin_infinite_memory/releases)
+2. 解压后将`astrbot_plugin_infinite_memory`文件夹放入`AstrBot/data/plugins/`目录
+3. 重启AstrBot服务
+
+## ⚙️ 配置说明
+
+在AstrBot WebUI的「插件管理」中启用插件后，可配置以下参数：
 
 | 参数名 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `max_token_count` | 整数 | 10000 | 触发总结的 token 阈值（建议设为模型上下文的 70-80%） |
-| `keep_last_rounds` | 整数 | 10 | 总结时保留的最新对话轮数 |
-| `group_isolation` | 布尔 | true | 是否为每个群组创建独立记忆数据库 |
-| `use_embedding` | 布尔 | true | 是否使用 embedding 模型提升记忆召回精准度 |
-| `summary_provider_id` | 字符串 | (空) | 用于总结的模型提供商 ID（如 openai, gemini） |
+| `max_token_count` | 整数 | 10000 | 触发总结的token阈值（建议设为模型上下文的70-80%） |
+| `keep_last_rounds` | 整数 | 10 | 总结时保留的最新对话轮数，确保上下文连贯 |
+| `group_isolation` | 布尔 | true | 为每个群组创建独立记忆数据库，保障数据隔离 |
+| `use_embedding` | 布尔 | true | 启用embedding模型提升记忆召回精准度 |
+| `summary_provider_id` | 字符串 | (空) | 用于总结的模型提供商ID（如openai, gemini），留空使用当前会话模型 |
+| `embedding_provider_id` | 字符串 | (空) | 用于生成记忆向量的Embedding Provider ID，留空使用默认配置 |
 | `max_retries` | 整数 | 3 | 总结失败时的最大重试次数 |
-| `whitelist` | 列表 | [] | 白名单列表（群号或QQ号），留空则允许所有 |
+| `whitelist` | 列表 | [] | 白名单列表（群号或QQ号），留空则允许所有会话 |
 
-## 🧭 使用指南
+## 📋 管理员指令集
 
-### 核心机制
-
-插件在后台自动运行，当对话达到设定的 token 阈值时：
-1. 调用 LLM 生成对话总结
-2. 将总结压缩为精简记忆并存储
-3. 创建用户画像并更新关系
-4. 清理旧历史，创建新对话
-5. 保留最后 N 轮对话，确保上下文连贯
-
-### 管理员指令
-
-> **注意**：所有 `/inmem` 指令仅限群/频道管理员使用
+> 所有`/inmem`指令仅限管理员使用
 
 | 指令 | 功能 | 示例 |
 |------|------|------|
 | `/inmem` | 显示指令帮助 | `/inmem` |
 | `/inmem status` | 查看插件状态与统计数据 | `/inmem status` |
+| `/inmem token` | 查看当前会话累计token | `/inmem token` |
 | `/inmem recall <关键词>` | 测试记忆召回功能 | `/inmem recall 旅行` |
 | `/inmem profile <称呼>` | 按称呼查询用户画像 | `/inmem profile 小雪` |
 | `/inmem id <用户ID>` | 按用户ID查询画像 | `/inmem id 123456` |
 | `/inmem summary` | 立即触发总结（无视阈值） | `/inmem summary` |
 
+### 指令示例
+
+```
+/inmem status
+🧠 无限记忆插件 v1.1.1 状态
+📊 数据统计：
+  • 记忆总数：24
+  • 用户画像：3
+  • 原始总结：24
+  • 连接关系：48
+⚙️ 当前配置：
+  • Token 阈值：10000
+  • 保留轮数：10
+  • 群隔离：✅ 开启
+  • Embedding：✅ 启用
+  • Embedding 模型：默认
+📁 数据库：memories_2167039796.db
+🔢 当前会话累计 token：8742
+```
+
+## 🧠 工作原理
+
+1. **Token监控**：仅统计bot实际处理的请求，非bot对话不计入
+2. **自动总结**：当累计token达到阈值，调用LLM生成对话总结
+3. **记忆构建**：
+   - 将总结压缩为≤150字的精简记忆
+   - 识别高相关度用户（【核心】/【活跃】），更新用户画像
+   - 为记忆与用户创建双向连接关系
+4. **上下文重建**：
+   - 创建新对话，注入【前情提要】
+   - 保留最后N轮对话，确保无缝衔接
+5. **智能召回**：
+   - 对话中识别关键词/关键信息
+   - 从记忆图谱中检索相关记忆
+   - LLM压缩整合为≤200字上下文，自动注入对话
+
 ## ❓ 常见问题
 
-### Q: 为什么我的对话没有触发总结？
-- 检查 `max_token_count` 配置是否合理（当前对话 token 未达到阈值）
-- 检查白名单设置，确保当前会话在允许范围内
-- 查看日志，确认是否有错误信息
+### Q: 为什么设置了10000 token阈值，但对话很少就触发总结？
+A: 早期版本基于消息轮次估算token，不准确。当前版本使用**真实token统计**，仅计算bot实际处理的请求，非bot对话（纯用户间聊天）不计入，彻底解决此问题。
 
-### Q: 记忆召回不精准怎么办？
-- 启用 `use_embedding` 选项并配置合适的 embedding 模型
-- 增加 `max_token_count` 值，减少总结频率
-- 通过 `/inmem summary` 手动触发总结，让 AI 重新学习上下文
+### Q: 怎么查看当前会话用了多少token？
+A: 管理员可使用`/inmem token`命令查看当前会话累计token使用量和进度条。
 
-### Q: 插件占用太多磁盘空间怎么办？
-- 插件会自动清理超过 30 天未使用的低权重记忆
-- 可通过调整配置降低总结频率
-- 定期使用 `/inmem status` 查看数据量，必要时手动清理
+### Q: 记忆召回不准确怎么办？
+A: 建议：
+1. 启用`use_embedding`选项并配置合适的embedding模型
+2. 增加`max_token_count`值，减少总结频率，保留更多上下文
+3. 通过`/inmem summary`手动触发总结，让AI重新学习上下文
 
-### Q: 如何指定专用的模型进行总结？
-- 在配置中填写 `summary_provider_id`，选择专门的高质量模型
-- 系统会优先使用此模型，失败则降级到当前会话模型
+### Q: 如何清理过期记忆？
+A: 插件会自动清理超过30天未使用的低权重记忆。也可通过调整配置降低总结频率，或定期使用`/inmem status`查看数据量，必要时重置会话。
 
-## 🤝 贡献与支持
-欢迎提交 Issue 和 PR！如果您遇到任何问题或有改进建议：
----  
-**版本**：v1.1.0  
-**兼容版本**：AstrBot ≥ 4.0.0
+### Q: 总结失败怎么办？
+A: 系统会：
+1. 优先使用`summary_provider_id`指定的模型
+2. 失败则降级到当前会话模型
+3. 所有尝试失败后，向管理员发送警告，保留当前对话历史
+4. 等待下次触发时再次尝试总结
 
+## 🛡️ 故障保护机制
+
+- **多重降级**：总结失败时自动尝试备选模型
+- **数据安全**：所有操作前先备份，失败自动回滚
+- **内存保护**：自动清理低权重、长期未使用的记忆
+- **资源监控**：实时跟踪token使用，防止超限
+- **优雅降级**：当embedding服务不可用时，自动回退到关键词匹配
+
+## 🚀 版本信息
+
+- **插件版本**：v1.1.1
+- **兼容AstrBot**：≥ 4.0.0
+- **最后更新**：2025-11-29
+
+## 🙏 鸣谢
+
+参考插件:
+- [Alan Backer](https://github.com/AlanBacker) - 无限对话功能原型
+- [FengYing](https://github.com/) - Token统计机制参考
+
+## 📜 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。
+
+---
+
+⭐ **觉得这个插件有用？** 请在 GitHub 上给我们一颗星！  
+🐞 **遇到问题？** 请在 [Issues](https://github.com/ThriEy/astrbot_plugin_infinite_memory/issues) 提交反馈。  
+🤝 **想要贡献？** 欢迎提交 PR！
