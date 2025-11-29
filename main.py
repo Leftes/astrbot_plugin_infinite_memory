@@ -12,10 +12,10 @@ from .memory_manager import MemoryManager
 
 
 @register(
-    "astrbot_plugin_infinite_memory", 
-    "ThriEy", 
-    "无限记忆插件：自动总结对话历史，构建记忆图谱", 
-    "1.1.1", 
+    "astrbot_plugin_infinite_memory",
+    "ThriEy",
+    "无限记忆插件：自动总结对话历史，构建记忆图谱",
+    "v1.1.2",
     "https://github.com/ThriEy/astrbot_plugin_infinite_memory"
 )
 class InfiniteMemoryPlugin(Star):
@@ -25,18 +25,20 @@ class InfiniteMemoryPlugin(Star):
         self.data_dir = StarTools.get_data_dir()
         os.makedirs(self.data_dir, exist_ok=True)
         self.memory_manager = MemoryManager(context, config, self.data_dir)
-        #新增：真实 token 计数器 {session_id: total_tokens}
-        self.session_token_count = {}
-        logger.info(f"🧠 无限记忆插件启动，数据目录: {self.data_dir}")
+        
+        #防抖动 & 防重入状态
+        self.session_trigger_count = {}   # {session_id: 连续超阈值次数}
+        self.session_summarizing = set()  # {session_id: 正在总结中}
+        self.session_token_count = {}     # {session_id: 累计真实 token}
+        
+        logger.info("🧠 无限记忆插件启动")
 
-    # ========== 新增：真实 token 统计钩子 ==========
+    # ========== 新增：真实 Token 统计钩子 ==========
     @filter.on_llm_response()
     async def _on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        """仅当 bot 处理消息时才累计 token"""
+        """仅统计 bot 实际处理的请求"""
         try:
-            session_id = event.unified_msg_origin  # 会话唯一ID
-            
-            # 提取真实 token
+            session_id = event.unified_msg_origin
             usage = getattr(resp.raw_completion, "usage", None)
             if not usage or not hasattr(usage, "total_tokens"):
                 return
@@ -45,18 +47,13 @@ class InfiniteMemoryPlugin(Star):
             # 累加
             self.session_token_count[session_id] = self.session_token_count.get(session_id, 0) + real_tokens
             logger.debug(f"[Token统计] 会话 {session_id} 累计: {self.session_token_count[session_id]}")
-            
         except Exception as e:
             logger.warning(f"Token 统计失败: {e}")
 
     # ========== 核心：对话总结与记忆注入 ==========
     @filter.event_message_type(filter.EventMessageType.ALL, priority=100)
     async def on_message(self, event: AstrMessageEvent, *args, **kwargs):
-        if not self._is_event_valid(event):
-            logger.warning("无效的事件对象")
-            return
-
-        if not self._check_whitelist(event):
+        if not self._is_event_valid(event) or not self._check_whitelist(event):
             return
 
         conversation = await self._get_conversation(event)
@@ -64,39 +61,61 @@ class InfiniteMemoryPlugin(Star):
             return
 
         try:
-            #使用真实 token 触发
             session_id = event.unified_msg_origin
-            current_tokens = self.session_token_count.get(session_id, 0)
-            max_token = self.config.get("max_token_count", 30000)
             
+            #防重入：总结进行中跳过
+            if session_id in self.session_summarizing:
+                logger.debug(f"[防重入] 会话 {session_id} 总结进行中，跳过")
+                return
+
+            current_tokens = self.session_token_count.get(session_id, 0)
+            max_token = self.config.get("max_token_count", 10000)
+            
+            #防抖动：连续 3 次超阈值才触发
             if current_tokens >= max_token:
-                logger.info(f"[真实Token] 会话 {session_id} 累计 {current_tokens} ≥ {max_token}，触发总结")
-                summary_text = await self._generate_summary(conversation, event)
-                if summary_text:
-                    # 清空当前会话 token 计数（总结后重置）
-                    self.session_token_count[session_id] = 0
+                self.session_trigger_count[session_id] = self.session_trigger_count.get(session_id, 0) + 1
+                logger.debug(f"[防抖动] 会话 {session_id} 连续超阈值: {self.session_trigger_count[session_id]}/3")
+                
+                if self.session_trigger_count[session_id] >= 3:
+                    self.session_trigger_count[session_id] = 0
+                    logger.info(f"[真实Token] 会话 {session_id} 累计 {current_tokens} ≥ {max_token}，连续3次超阈值，触发总结")
                     
-                    source_summary_id = await self.memory_manager.store_source_summary(
-                        event, 
-                        summary_text
-                    )
-                    await self.memory_manager.inject_memory(
-                        event, 
-                        summary_text, 
-                        source_summary_id
-                    )
-                    await self._apply_summary_with_tail(
-                        event, 
-                        conversation, 
-                        summary_text,
-                        source_summary_id
-                    )
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON解析失败: {e}")
+                    # 标记为总结中
+                    self.session_summarizing.add(session_id)
+                    
+                    try:
+                        summary_text = await self._generate_summary(conversation, event)
+                        if summary_text:
+                            #最小轮次保护：至少 5 轮才清理
+                            raw_history = []
+                            try:
+                                raw_history = json.loads(conversation.history)
+                            except:
+                                pass
+                            if len(raw_history) < 5:
+                                logger.warning(f"[保护] 会话历史仅 {len(raw_history)} 轮 < 5，跳过清理")
+                                self.session_token_count[session_id] = 0
+                                return
+                            
+                            #重置 token 计数
+                            self.session_token_count[session_id] = 0
+                            
+                            source_summary_id = await self.memory_manager.store_source_summary(event, summary_text)
+                            await self.memory_manager.inject_memory(event, summary_text, source_summary_id)
+                            await self._apply_summary_with_tail(event, conversation, summary_text, source_summary_id)
+                    finally:
+                        self.session_summarizing.discard(session_id)
+            else:
+                #未超阈值，重置连续计数
+                self.session_trigger_count.pop(session_id, None)
+                
         except Exception as e:
             logger.error(f"处理消息时发生错误: {e}", exc_info=True)
+            #异常时确保解除标记
+            session_id = getattr(event, 'unified_msg_origin', 'unknown')
+            self.session_summarizing.discard(session_id)
 
-    # ========== 新增：记忆召回钩子（优先级 90） ==========
+    # ==========记忆召回钩子==========
     @filter.event_message_type(filter.EventMessageType.ALL, priority=90)
     async def on_recall_memory(self, event: AstrMessageEvent):
         """在 LLM 请求前注入相关记忆"""
@@ -145,14 +164,14 @@ class InfiniteMemoryPlugin(Star):
                 cursor.execute("SELECT COUNT(*) FROM connections")
                 conn_count = cursor.fetchone()[0]
 
-            max_token = self.config.get("max_token_count", 30000)
+            max_token = self.config.get("max_token_count", 10000)
             keep_last = self.config.get("keep_last_rounds", 10)
             group_iso = self.config.get("group_isolation", True)
             use_emb = self.config.get("use_embedding", True)
             emb_provider = self.config.get("embedding_provider_id", "默认")
 
             msg = (
-                "🧠 无限记忆插件 v1.1.1 状态\n"
+                "🧠 无限记忆插件 v1.1.2 状态\n"
                 f"📊 数据统计：\n"
                 f"  • 记忆总数：{memory_count}\n"
                 f"  • 用户画像：{profile_count}\n"
@@ -289,7 +308,7 @@ class InfiniteMemoryPlugin(Star):
         try:
             session_id = event.unified_msg_origin
             current_tokens = self.session_token_count.get(session_id, 0)
-            max_token = self.config.get("max_token_count", 30000)
+            max_token = self.config.get("max_token_count", 10000)
             progress = min(100, int(current_tokens / max_token * 100)) if max_token > 0 else 0
             
             # 进度条可视化
@@ -305,7 +324,7 @@ class InfiniteMemoryPlugin(Star):
                 f"• 触发阈值: {max_token}\n"
                 f"• 使用进度: {progress_bar}\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"💡 统计 bot 实际处理的请求"
+                f"💡 说明：仅统计 bot 实际处理的请求（非 bot 间对话不计入）"
             )
             yield event.plain_result(msg)
         except Exception as e:
@@ -321,19 +340,38 @@ class InfiniteMemoryPlugin(Star):
                 yield event.plain_result("📭 当前无对话历史，无法总结。")
                 return
 
-            summary_text = await self._generate_summary(conversation, event)
-            if summary_text:
-                # 清空 token 计数
-                self.session_token_count[event.unified_msg_origin] = 0
-                
-                source_summary_id = await self.memory_manager.store_source_summary(event, summary_text)
-                await self.memory_manager.inject_memory(event, summary_text, source_summary_id)
-                await self._apply_summary_with_tail(event, conversation, summary_text, source_summary_id)
-                yield event.plain_result("✅ 已立即完成总结并注入记忆。")
-            else:
-                yield event.plain_result("⚠️ 总结生成失败，请检查模型配置。")
+            # 强制触发也受防重入保护
+            session_id = event.unified_msg_origin
+            if session_id in self.session_summarizing:
+                yield event.plain_result("⏳ 总结进行中，请稍后再试。")
+                return
+
+            self.session_summarizing.add(session_id)
+            try:
+                summary_text = await self._generate_summary(conversation, event)
+                if summary_text:
+                    # 强制总结也受最小轮次保护
+                    raw_history = []
+                    try:
+                        raw_history = json.loads(conversation.history)
+                    except:
+                        pass
+                    if len(raw_history) < 5:
+                        yield event.plain_result(f"⚠️ 会话历史仅 {len(raw_history)} 轮 < 5，为保护上下文，跳过总结。")
+                        return
+
+                    self.session_token_count[session_id] = 0
+                    source_summary_id = await self.memory_manager.store_source_summary(event, summary_text)
+                    await self.memory_manager.inject_memory(event, summary_text, source_summary_id)
+                    await self._apply_summary_with_tail(event, conversation, summary_text, source_summary_id)
+                    yield event.plain_result("✅ 已立即完成总结并注入记忆。")
+                else:
+                    yield event.plain_result("⚠️ 总结生成失败，请检查模型配置。")
+            finally:
+                self.session_summarizing.discard(session_id)
         except Exception as e:
             logger.error(f"/inmem summary 错误: {e}", exc_info=True)
+            self.session_summarizing.discard(event.unified_msg_origin)
             yield event.plain_result(f"❌ 强制总结失败: {e}")
 
     # ========== 以下为原插件逻辑（保持不变） ==========

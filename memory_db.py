@@ -45,7 +45,7 @@ class MemoryDB:
                 user_id TEXT NOT NULL UNIQUE,
                 display_names TEXT,
                 summary TEXT,
-                affinity INTEGER DEFAULT 0,  -- 明确为 INTEGER
+                affinity INTEGER DEFAULT 0,
                 traits TEXT,
                 last_updated INTEGER,
                 embedding BLOB
@@ -131,13 +131,13 @@ class MemoryDB:
                         )
                         conn.commit()
                 return profile
-            # 创建新画像（✅ affinity 明确为 0）
+            # 创建新画像
             display_names = [display_name] if display_name else []
             cursor.execute(
                 """INSERT INTO user_profiles 
                 (user_id, display_names, affinity, last_updated) 
-                VALUES (?, ?, ?, ?)""",
-                (user_id, json.dumps(display_names), 0, int(time.time()))  # ← int 0
+                VALUES (?, ?, 0, ?)""",
+                (user_id, json.dumps(display_names), int(time.time()))
             )
             conn.commit()
             cursor.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,))
@@ -146,7 +146,7 @@ class MemoryDB:
 
     def update_user_profile(self, user_id: str, summary: str = None, affinity_change: int = 0,
                           traits: Dict[str, Any] = None, embedding: bytes = None):
-        """更新用户画像（✅ 修复 str/int 类型错误）"""
+        """更新用户画像（✅ 三重类型防护）"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             # 获取当前画像
@@ -155,8 +155,8 @@ class MemoryDB:
             if not row:
                 return
 
-            # ✅ 关键修正：三重保障处理 affinity 类型
-            current_affinity = row[5]  # affinity 字段（索引5）
+            # ✅ 关键修复：三重防护（None/str/int）
+            current_affinity = row[5]  # affinity 字段
             if current_affinity is None:
                 current_affinity = 0
             elif isinstance(current_affinity, str):
@@ -164,8 +164,7 @@ class MemoryDB:
                     current_affinity = int(current_affinity)
                 except (ValueError, TypeError):
                     current_affinity = 0
-            # 此时 current_affinity 一定是 int
-            
+            # 此时 current_affinity 100% 为 int
             new_affinity = max(-100, min(100, current_affinity + affinity_change))
             
             update_fields = []
