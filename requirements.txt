@@ -1,0 +1,7 @@
+# 无限记忆插件依赖说明
+#
+# 本插件无额外 Python 包依赖，仅需：
+# 1. AstrBot v4.0.0+ 运行环境
+# 2. Python 3.10+（标准库已包含所有必需模块）
+#
+# 部署时无需执行 pip install -r requirements.txt

@@ -1,0 +1,6 @@
+name: astrbot_plugin_infinite_memory
+display_name: 无限记忆插件
+desc: 根据token自动总结上下文，同时采用记忆图谱存储记忆，让AI拥有长期无限记忆
+version: v1.1.2
+author: ThriEy
+repo: https://github.com/ThriEy/astrbot_plugin_infinite_memory

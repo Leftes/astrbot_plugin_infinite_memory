@@ -1,0 +1,54 @@
+{
+    "max_token_count": {
+        "description": "触发总结的 token 阈值",
+        "type": "int",
+        "default": 10000,
+        "hint": "当对话历史估算 token 数达到此值时触发总结。建议设置为模型上下文的 70-80%。"
+    },
+    "keep_last_rounds": {
+        "description": "保留的最新对话轮数",
+        "type": "int",
+        "default": 10,
+        "hint": "总结时保留的最后 N 轮对话，用于保持上下文连贯性。"
+    },
+    "group_isolation": {
+        "description": "群聊隔离模式",
+        "type": "bool",
+        "default": true,
+        "hint": "启用后，每个群组将使用独立的记忆数据库，确保数据隔离。"
+    },
+    "use_embedding": {
+        "description": "启用语义搜索",
+        "type": "bool",
+        "default": true,
+        "hint": "使用 embedding 模型提升记忆召回的精准度。需要 AstrBot >= v4.0.0。"
+    },
+        "embedding_provider_id": {
+        "description": "向量嵌入提供商 ID",
+        "type": "string",
+        "default": "",
+        "hint": "用于生成记忆向量的 Embedding Provider ID"
+    },
+    "summary_provider_id": {
+        "description": "用于总结的模型提供商 ID",
+        "type": "string",
+        "default": "",
+        "hint": "留空则使用当前会话的模型。可填写如 'openai', 'gemini' 等。",
+        "_special": "select_provider"
+    },
+    "max_retries": {
+        "description": "总结失败重试次数",
+        "type": "int",
+        "default": 3,
+        "hint": "如果总结失败，尝试重试的次数。默认 3 次。"
+    },
+    "whitelist": {
+        "description": "白名单列表 (群号或QQ号)",
+        "type": "list",
+        "default": [],
+        "hint": "留空则允许所有。填写群号或个人QQ号。",
+        "items": {
+            "type": "string"
+        }
+    }
+}
